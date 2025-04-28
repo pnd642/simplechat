@@ -1,41 +1,44 @@
 # lambda/index.py
 import json
 import os
-import boto3
+# import boto3
 import re  # 正規表現モジュールをインポート
-from botocore.exceptions import ClientError
+# from botocore.exceptions import ClientError
+import urllib.request
+import urllib.error
 
+FASTAPI_URL = "https://4514-34-125-103-72.ngrok-free.app/invoke"
 
 # Lambda コンテキストからリージョンを抽出する関数
-def extract_region_from_arn(arn):
-    # ARN 形式: arn:aws:lambda:region:account-id:function:function-name
-    match = re.search('arn:aws:lambda:([^:]+):', arn)
-    if match:
-        return match.group(1)
-    return "us-east-1"  # デフォルト値
+# def extract_region_from_arn(arn):
+#     # ARN 形式: arn:aws:lambda:region:account-id:function:function-name
+#     match = re.search('arn:aws:lambda:([^:]+):', arn)
+#     if match:
+#         return match.group(1)
+#     return "us-east-1"  # デフォルト値
 
-# グローバル変数としてクライアントを初期化（初期値）
-bedrock_client = None
+# # グローバル変数としてクライアントを初期化（初期値）
+# bedrock_client = None
 
-# モデルID
-MODEL_ID = os.environ.get("MODEL_ID", "us.amazon.nova-lite-v1:0")
+# # モデルID
+# MODEL_ID = os.environ.get("MODEL_ID", "us.amazon.nova-lite-v1:0")
 
 def lambda_handler(event, context):
     try:
         # コンテキストから実行リージョンを取得し、クライアントを初期化
-        global bedrock_client
-        if bedrock_client is None:
-            region = extract_region_from_arn(context.invoked_function_arn)
-            bedrock_client = boto3.client('bedrock-runtime', region_name=region)
-            print(f"Initialized Bedrock client in region: {region}")
+        # global bedrock_client
+        # if bedrock_client is None:
+        #     region = extract_region_from_arn(context.invoked_function_arn)
+        #     bedrock_client = boto3.client('bedrock-runtime', region_name=region)
+        #     print(f"Initialized Bedrock client in region: {region}")
         
         print("Received event:", json.dumps(event))
         
         # Cognitoで認証されたユーザー情報を取得
-        user_info = None
-        if 'requestContext' in event and 'authorizer' in event['requestContext']:
-            user_info = event['requestContext']['authorizer']['claims']
-            print(f"Authenticated user: {user_info.get('email') or user_info.get('cognito:username')}")
+        # user_info = None
+        # if 'requestContext' in event and 'authorizer' in event['requestContext']:
+        #     user_info = event['requestContext']['authorizer']['claims']
+        #     print(f"Authenticated user: {user_info.get('email') or user_info.get('cognito:username')}")
         
         # リクエストボディの解析
         body = json.loads(event['body'])
@@ -43,7 +46,7 @@ def lambda_handler(event, context):
         conversation_history = body.get('conversationHistory', [])
         
         print("Processing message:", message)
-        print("Using model:", MODEL_ID)
+        # print("Using model:", MODEL_ID)
         
         # 会話履歴を使用
         messages = conversation_history.copy()
@@ -56,22 +59,22 @@ def lambda_handler(event, context):
         
         # Nova Liteモデル用のリクエストペイロードを構築
         # 会話履歴を含める
-        bedrock_messages = []
-        for msg in messages:
-            if msg["role"] == "user":
-                bedrock_messages.append({
-                    "role": "user",
-                    "content": [{"text": msg["content"]}]
-                })
-            elif msg["role"] == "assistant":
-                bedrock_messages.append({
-                    "role": "assistant", 
-                    "content": [{"text": msg["content"]}]
-                })
+        # bedrock_messages = []
+        # for msg in messages:
+        #     if msg["role"] == "user":
+        #         bedrock_messages.append({
+        #             "role": "user",
+        #             "content": [{"text": msg["content"]}]
+        #         })
+        #     elif msg["role"] == "assistant":
+        #         bedrock_messages.append({
+        #             "role": "assistant", 
+        #             "content": [{"text": msg["content"]}]
+        #         })
         
         # invoke_model用のリクエストペイロード
         request_payload = {
-            "messages": bedrock_messages,
+            "messages": messages,
             "inferenceConfig": {
                 "maxTokens": 512,
                 "stopSequences": [],
@@ -79,19 +82,32 @@ def lambda_handler(event, context):
                 "topP": 0.9
             }
         }
+
+        print("Calling FastAPI with payload:", json.dumps(request_payload)) 
+        # print("Calling Bedrock invoke_model API with payload:", json.dumps(request_payload))
         
-        print("Calling Bedrock invoke_model API with payload:", json.dumps(request_payload))
-        
-        # invoke_model APIを呼び出し
-        response = bedrock_client.invoke_model(
-            modelId=MODEL_ID,
-            body=json.dumps(request_payload),
-            contentType="application/json"
+        # # invoke_model APIを呼び出し
+        # response = bedrock_client.invoke_model(
+        #     modelId=MODEL_ID,
+        #     body=json.dumps(request_payload),
+        #     contentType="application/json"
+        # )
+
+        #urllib.requestでPOST
+        req = urllib.request.Request(
+            url=FASTAPI_URL,
+            data=json.dumps(request_payload).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+            method='POST'
         )
         
         # レスポンスを解析
-        response_body = json.loads(response['body'].read())
-        print("Bedrock response:", json.dumps(response_body, default=str))
+        with urllib.request.urlopen(req) as res:
+          response_body = res.read()
+          response_data = json.loads(response_body)
+          print("FastAPI response:", json.dumps(response_body, default=str))
+          # response_body = json.loads(response['body'].read())
+        # print("Bedrock response:", json.dumps(response_body, default=str))
         
         # 応答の検証
         if not response_body.get('output') or not response_body['output'].get('message') or not response_body['output']['message'].get('content'):
@@ -121,20 +137,37 @@ def lambda_handler(event, context):
                 "conversationHistory": messages
             })
         }
-        
-    except Exception as error:
-        print("Error:", str(error))
-        
+    except urllib.error.HTTPError as e:
+        print("HTTP Error:", e.code, e.reason)
+        return {
+            "statusCode": e.code,
+            "body": json.dumps({"success": False, "error": e.reason})
+        }
+    except urllib.error.URLError as e:
+        print("URL Error:", e.reason)
         return {
             "statusCode": 500,
-            "headers": {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token",
-                "Access-Control-Allow-Methods": "OPTIONS,POST"
-            },
-            "body": json.dumps({
-                "success": False,
-                "error": str(error)
-            })
+            "body": json.dumps({"success": False, "error": str(e.reason)})
         }
+    except Exception as error:
+        print("Error:", str(error))
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"success": False, "error": str(error)})
+        } 
+    # except Exception as error:
+    #     print("Error:", str(error))
+        
+    #     return {
+    #         "statusCode": 500,
+    #         "headers": {
+    #             "Content-Type": "application/json",
+    #             "Access-Control-Allow-Origin": "*",
+    #             "Access-Control-Allow-Headers": "Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token",
+    #             "Access-Control-Allow-Methods": "OPTIONS,POST"
+    #         },
+    #         "body": json.dumps({
+    #             "success": False,
+    #             "error": str(error)
+    #         })
+    #     }
